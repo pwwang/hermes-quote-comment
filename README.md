@@ -2,6 +2,8 @@
 
 A desktop plugin for [Hermes Agent](https://hermes-agent.nousresearch.com/) that lets you select any part of a response, attach a comment to it, and carry both into your next message.
 
+![Demo: select, comment, and the block lands in the composer](images/demo.gif)
+
 ![Context menu over a text selection](images/1-context-menu.png)
 
 ## What it does
