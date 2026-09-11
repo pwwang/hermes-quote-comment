@@ -15,7 +15,7 @@
  *   own menu, so Copy must be re-implemented via ctx.os.writeClipboard.
  */
 
-import { COMPOSER_AREAS, STATUSBAR_AREAS, atom, useValue, Button, Textarea, Tip } from '@hermes/plugin-sdk'
+import { COMPOSER_AREAS, STATUSBAR_AREAS, atom, useValue, Button, Codicon, Textarea, Tip } from '@hermes/plugin-sdk'
 import { Fragment, jsx, jsxs } from 'react/jsx-runtime'
 import { useState } from 'react'
 
@@ -49,6 +49,15 @@ function armDismissSuppression() {
     suppressDismiss = false
   }, 1500)
 }
+
+// -- cross-plugin menu extension host -------------------------------------
+
+/** Registry other plugins publish menu rows into, so their entries show up in
+ *  this menu. It lives on globalThis rather than behind an import: plugins
+ *  share the renderer realm but not module instances, and a consumer must be
+ *  able to pick up the host of a plugin that reloaded under it.
+ *  rows: { id, label, onSelect(text) } — see translate. */
+const EXT_KEY = '__hermes_message_menu_ext'
 
 // -- composer insertion ---------------------------------------------------
 
@@ -263,16 +272,18 @@ function dismissAppMenu() {
  *  before Radix's document-level handler, so acting there always wins.
  *  Hover state lives in React (no class list available at runtime — the app's
  *  Tailwind build never scans this file). */
-function MenuRow({ label, onSelect }) {
+function MenuRow({ icon, label, onSelect }) {
   const [hover, setHover] = useState(false)
 
-  return jsx('button', {
+  return jsxs('button', {
     type: 'button',
     onPointerDown: onSelect,
     onMouseEnter: () => setHover(true),
     onMouseLeave: () => setHover(false),
     style: {
-      display: 'block',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 7,
       width: '100%',
       padding: '5px 10px',
       border: 0,
@@ -284,7 +295,10 @@ function MenuRow({ label, onSelect }) {
       fontFamily: 'inherit',
       cursor: 'pointer'
     },
-    children: label
+    children: [
+      jsx(Codicon, { name: icon, size: 13, style: { flexShrink: 0, color: 'var(--ui-text-secondary)' } }),
+      label
+    ]
   })
 }
 
@@ -292,11 +306,17 @@ function ContextMenuCard({ x, y, text }) {
   const left = Math.min(x, window.innerWidth - 176)
   const top = Math.min(y, window.innerHeight - 100)
 
+  // Read at render time: the menu re-renders on open, so rows registered
+  // since the last gesture show up without any store wiring.
+  const ext = globalThis[EXT_KEY]
+  const extRows = ext?.alive ? ext.rows : []
+
   return jsxs('div', {
     'data-qc': 'menu',
     style: { ...SURFACE, left, top, minWidth: 160, padding: 4 },
     children: [
       jsx(MenuRow, {
+        icon: 'copy',
         label: 'Copy',
         onSelect: () => {
           armDismissSuppression()
@@ -305,13 +325,29 @@ function ContextMenuCard({ x, y, text }) {
         }
       }),
       jsx(MenuRow, {
+        icon: 'comment',
         label: 'Comment',
         onSelect: () => {
           armDismissSuppression()
           dialogAtom.set({ open: true, quote: text })
           closeMenu()
         }
-      })
+      }),
+      // Extension rows activate through the same MenuRow path as the base
+      // rows, dismiss suppression included — `onSelect` is the consumer's
+      // handoff, not a second code path.
+      ...extRows.map(row =>
+        jsx(MenuRow, {
+          key: row.id,
+          icon: row.icon ?? 'plug',
+          label: row.label,
+          onSelect: () => {
+            armDismissSuppression()
+            closeMenu()
+            void row.onSelect(text)
+          }
+        })
+      )
     ]
   })
 }
@@ -578,6 +614,11 @@ export default {
   register(ctx) {
     ctxRef = ctx
 
+    // A fresh host per load. Consumers re-register their rows idempotently at
+    // every contextmenu, so a replacement object is picked up on the next
+    // gesture rather than going stale.
+    globalThis[EXT_KEY] = { alive: true, rows: [] }
+
     ctx.register({
       id: 'chip',
       area: STATUSBAR_AREAS.right,
@@ -620,7 +661,14 @@ export default {
       // Suppressing the app menu means WE must offer Copy ourselves.
       event.preventDefault()
       event.stopPropagation()
-      menuAtom.set({ open: true, x: event.clientX, y: event.clientY, text: ctxInfo.text })
+      // Microtask, not a sync set: other plugins' window-capture contextmenu
+      // listeners run in this same dispatch and may register menu-extension
+      // rows (see the __hermes_message_menu_ext host) — deferring lets every
+      // listener finish before the menu renders, so ext rows never race the
+      // first frame.
+      const point = { open: true, x: event.clientX, y: event.clientY, text: ctxInfo.text }
+
+      queueMicrotask(() => menuAtom.set(point))
       requestAnimationFrame(dismissAppMenu)
       setTimeout(dismissAppMenu, 120)
     }
@@ -701,6 +749,15 @@ export default {
 
     // Full unload (disable/remove) must give the app its native menu back.
     ctx.onDispose(() => {
+      // Retract the extension host first: consumers check `alive` and fall
+      // back to their own menu instead of writing into a dead registry.
+      const h = globalThis[EXT_KEY]
+
+      if (h) {
+        h.alive = false
+        h.rows = []
+      }
+
       clearMarks()
       unbind(KEY_CONTEXTMENU, window, 'contextmenu', true)
       unbind(KEY_MOUSEDOWN, window, 'mousedown', true)
