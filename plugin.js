@@ -710,7 +710,10 @@ export default {
         return
       }
 
-      closeAll()
+      // An outside press dismisses the menu only. The comment dialog is a task
+      // surface: it is closed explicitly (Cancel / Submit / Escape), never by a
+      // stray click or a focus change.
+      closeMenu()
     }
 
     // Safety net removed: onMouseUp must NOT clear the marks — on Windows the
@@ -729,23 +732,35 @@ export default {
       }
     }
 
-    // Scroll/resize/blur close floating surfaces (menu must not follow the
-    // page away). Scrolls INSIDE a surface (textarea, list) are fine — the
+    // Scroll/resize close floating surfaces (menu must not follow the page
+    // away). Scrolls INSIDE a surface (textarea, list) are fine — the
     // capture-phase target identifies the scroller.
     const onScroll = event => {
       if (event.target instanceof Element && event.target.closest('[data-qc]')) {
         return
       }
 
-      closeAll()
+      closeMenu()
+    }
+
+    // Focus loss (alt-tab, clicking another app), scrolling and resizing close
+    // only the transient menu. A half-written comment must survive all three:
+    // the user tabs away to look something up and comes back to the dialog
+    // still open.
+    const onBlur = () => {
+      closeMenu()
+    }
+
+    const onResize = () => {
+      closeMenu()
     }
 
     bindOnce(KEY_CONTEXTMENU, window, 'contextmenu', onContextMenu, true)
     bindOnce(KEY_MOUSEDOWN, window, 'mousedown', onMouseDown, true)
     bindOnce(KEY_KEYDOWN, window, 'keydown', onKeyDown, true)
     bindOnce(KEY_SCROLL, window, 'scroll', onScroll, true)
-    bindOnce(KEY_BLUR, window, 'blur', closeAll, false)
-    bindOnce(KEY_RESIZE, window, 'resize', closeAll, false)
+    bindOnce(KEY_BLUR, window, 'blur', onBlur, false)
+    bindOnce(KEY_RESIZE, window, 'resize', onResize, false)
 
     // Full unload (disable/remove) must give the app its native menu back.
     ctx.onDispose(() => {
